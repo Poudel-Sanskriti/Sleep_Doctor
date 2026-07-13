@@ -18,8 +18,8 @@ We compare both paths, validate with k-fold cross-validation, interpret with per
 ## Getting started
 
 ```bash
-git clone https://github.com/Poudel-Sanskriti/AI4All.git
-cd AI4All
+git clone https://github.com/Poudel-Sanskriti/Sleep_Doctor.git
+cd Sleep_Doctor
 pip install -r requirements.txt
 jupyter notebook
 ```
