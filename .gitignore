@@ -1,0 +1,22 @@
+# Class materials — not project code (and ~160 MB)
+*.pptx
+*.pdf
+*.zip
+
+# Internal planning docs — keep local, not for the public repo
+PROJECT_PLAN.md
+STEP_BY_STEP_GUIDE.md
+plan-site/
+sleep_model_week8.py
+
+# macOS junk
+.DS_Store
+
+# Python / Jupyter noise
+.ipynb_checkpoints/
+__pycache__/
+*.pyc
+
+# Virtual environments (if anyone creates one)
+venv/
+.venv/
