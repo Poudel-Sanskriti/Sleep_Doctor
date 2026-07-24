@@ -1,43 +1,25 @@
 """Sleep Doctor — interactive demo of the project's two Linear Regression models.
 
-Trains both models from sleep_health_dataset.csv on startup (cached, ~1s) so no
-model files need to be committed. Mirrors notebooks/05_model_refinements.ipynb:
-Path A (research-question) vs. the lifestyle/context extension.
+Loads pre-trained model parameters from models.json (see train.py) rather than
+fitting on startup, so the app's predictions are pinned to whatever was fit and
+validated offline. Mirrors notebooks/05_model_refinements.ipynb: Path A
+(research-question) vs. the lifestyle/context extension.
 """
+
+import json
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 import altair as alt
-from sklearn.linear_model import LinearRegression
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import r2_score, accuracy_score
 
-RANDOM_STATE = 117
-DATA_PATH = "sleep_health_dataset.csv"
-BUCKETS = ["Low", "Medium", "High"]
-
-PRIMARY_FEATURES = ["age", "stress_score", "steps_that_day", "exercise_day"]
-
-EXTENSION_NUMERIC = [
-    "work_hours_that_day", "caffeine_mg_before_bed", "alcohol_units_before_bed",
-    "screen_time_before_bed_mins", "bmi", "nap_duration_mins",
-]
-EXTENSION_BINARY = ["shift_work"]
-EXTENSION_CATEGORICAL = [
-    "chronotype", "mental_health_condition", "day_type", "season", "gender", "occupation",
-]
-CATEGORY_OPTIONS = {
-    "chronotype": ["Neutral", "Evening", "Morning"],
-    "mental_health_condition": ["Healthy", "Anxiety", "Depression", "Both"],
-    "day_type": ["Weekday", "Weekend"],
-    "season": ["Spring", "Summer", "Autumn", "Winter"],
-    "gender": ["Female", "Male", "Other"],
-    "occupation": [
-        "Doctor", "Driver", "Freelancer", "Homemaker", "Lawyer", "Manager",
-        "Nurse", "Retired", "Sales", "Software Engineer", "Student", "Teacher",
-    ],
-}
+from model_config import (
+    ARTIFACT_PATH,
+    CATEGORY_OPTIONS,
+    EXTENSION_CATEGORICAL,
+    PRIMARY_FEATURES,
+    to_bucket,
+)
 
 FRIENDLY_BASE = {
     "age": "Age",
@@ -66,11 +48,6 @@ STATUS_COLORS = {"Low": "#d03b3b", "Medium": "#fab219", "High": "#0ca30c"}
 STATUS_ICONS = {"Low": "⚠️", "Medium": "●", "High": "✓"}
 
 
-def to_bucket(scores: pd.Series) -> pd.Series:
-    rounded = scores.round()
-    return pd.cut(rounded, bins=[-np.inf, 4, 6, np.inf], labels=BUCKETS)
-
-
 def dummy_label(dummy_col: str) -> str:
     for base in EXTENSION_CATEGORICAL:
         prefix = base + "_"
@@ -79,64 +56,43 @@ def dummy_label(dummy_col: str) -> str:
     return dummy_col
 
 
+def friendly_primary_label(feature: str) -> str:
+    return FRIENDLY_BASE.get(feature, feature)
+
+
 @st.cache_resource
-def train_models():
-    df = pd.read_csv(DATA_PATH)
-    df["quality_bucket"] = to_bucket(df["sleep_quality_score"])
+def load_models():
+    try:
+        with open(ARTIFACT_PATH) as f:
+            artifact = json.load(f)
+    except FileNotFoundError:
+        st.error(
+            f"Missing `{ARTIFACT_PATH}` — this app serves a pre-trained model rather than "
+            "training on startup. Run `python train.py` once to generate it, then reload."
+        )
+        st.stop()
 
-    train_df, test_df = train_test_split(
-        df, test_size=0.2, random_state=RANDOM_STATE, stratify=df["quality_bucket"]
-    )
-    y_train = train_df["sleep_quality_score"]
-    y_test = test_df["sleep_quality_score"]
-
-    # Primary — the research question's three factors (activity = steps + exercise flag).
-    X_primary_train = train_df[PRIMARY_FEATURES]
-    X_primary_test = test_df[PRIMARY_FEATURES]
-    primary_model = LinearRegression().fit(X_primary_train, y_train)
-    primary_pred_test = primary_model.predict(X_primary_test)
-    primary_r2 = r2_score(y_test, primary_pred_test)
-    primary_acc = accuracy_score(
-        test_df["quality_bucket"],
-        to_bucket(pd.Series(primary_pred_test, index=X_primary_test.index)),
-    )
-    primary_means = X_primary_train.mean()
-
-    # Extension — full lifestyle/context, one-hot encoded to match 05_model_refinements.
-    extension_cols = PRIMARY_FEATURES + EXTENSION_NUMERIC + EXTENSION_BINARY + EXTENSION_CATEGORICAL
-    X_all = pd.get_dummies(df[extension_cols], columns=EXTENSION_CATEGORICAL, drop_first=True)
-    extension_columns = list(X_all.columns)
-
-    X_ext_train = X_all.loc[train_df.index]
-    X_ext_test = X_all.loc[test_df.index]
-    extension_model = LinearRegression().fit(X_ext_train, y_train)
-    extension_pred_test = extension_model.predict(X_ext_test)
-    extension_r2 = r2_score(y_test, extension_pred_test)
-    extension_acc = accuracy_score(
-        test_df["quality_bucket"],
-        to_bucket(pd.Series(extension_pred_test, index=X_ext_test.index)),
-    )
-    extension_means = X_ext_train.mean()
+    def unpack(section):
+        return {
+            "coefs": pd.Series(section["coefficients"]),
+            "intercept": section["intercept"],
+            "means": pd.Series(section["means"]),
+            "r2": section["test_r2"],
+            "acc": section["test_accuracy"],
+        }
 
     return {
-        "primary_model": primary_model,
-        "primary_means": primary_means,
-        "primary_r2": primary_r2,
-        "primary_acc": primary_acc,
-        "extension_model": extension_model,
-        "extension_means": extension_means,
-        "extension_columns": extension_columns,
-        "extension_r2": extension_r2,
-        "extension_acc": extension_acc,
+        "primary": unpack(artifact["primary"]),
+        "extension": {**unpack(artifact["extension"]), "columns": artifact["extension"]["columns"]},
     }
 
 
-def predict_with_breakdown(model, means, x_row):
+def predict_with_breakdown(coefs: pd.Series, intercept: float, means: pd.Series, x_row: pd.Series):
     """Predicted score + per-feature contribution vs. the training-set average person."""
-    coefs = pd.Series(model.coef_, index=means.index)
+    coefs = coefs.reindex(means.index)
     x_row = x_row.reindex(means.index).fillna(0.0)
     contributions = coefs * (x_row - means)
-    pred = float(model.intercept_ + coefs.dot(x_row))
+    pred = float(intercept + coefs.dot(x_row))
     return pred, contributions
 
 
@@ -216,7 +172,7 @@ def contribution_chart(contributions: pd.Series, label_fn, top_n: int = 8) -> al
 
 
 st.set_page_config(page_title="Sleep Doctor", page_icon="\U0001fa7a", layout="centered")
-models = train_models()
+models = load_models()
 
 st.title("\U0001fa7a\U0001f319 Sleep Doctor")
 st.caption(
@@ -270,19 +226,21 @@ if is_extension:
     raw_inputs["shift_work"] = int(extension_inputs["shift_work"])
     input_row = pd.DataFrame([raw_inputs])
     dummies = pd.get_dummies(input_row, columns=EXTENSION_CATEGORICAL)
-    x_row = dummies.iloc[0].reindex(models["extension_columns"]).fillna(0.0)
+    extension = models["extension"]
+    x_row = dummies.iloc[0].reindex(extension["columns"]).fillna(0.0)
     pred_score, contributions = predict_with_breakdown(
-        models["extension_model"], models["extension_means"], x_row
+        extension["coefs"], extension["intercept"], extension["means"], x_row
     )
-    r2, acc = models["extension_r2"], models["extension_acc"]
+    r2, acc = extension["r2"], extension["acc"]
     label_fn = dummy_label
 else:
+    primary = models["primary"]
     x_row = pd.Series(raw_inputs)[PRIMARY_FEATURES]
     pred_score, contributions = predict_with_breakdown(
-        models["primary_model"], models["primary_means"], x_row
+        primary["coefs"], primary["intercept"], primary["means"], x_row
     )
-    r2, acc = models["primary_r2"], models["primary_acc"]
-    label_fn = lambda f: FRIENDLY_BASE.get(f, f)
+    r2, acc = primary["r2"], primary["acc"]
+    label_fn = friendly_primary_label
 
 bucket = to_bucket(pd.Series([pred_score])).iloc[0]
 pred_display = float(np.clip(pred_score, 1, 10))
